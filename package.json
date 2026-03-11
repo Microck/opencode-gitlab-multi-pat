@@ -2,19 +2,34 @@
   "name": "gitlab-multi-pat",
   "version": "1.0.0",
   "description": "Multi-account GitLab PAT rotation plugin for OpenCode",
+  "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "bin": {
     "gitlab-multi-pat": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc && chmod +x dist/cli.js"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Microck/opencode-gitlab-multi-pat.git"
+  },
+  "homepage": "https://github.com/Microck/opencode-gitlab-multi-pat#readme",
+  "bugs": {
+    "url": "https://github.com/Microck/opencode-gitlab-multi-pat/issues"
+  },
   "dependencies": {
     "@opencode-ai/plugin": "^1.0.0"
   },
   "devDependencies": {
+    "@types/node": "^25.4.0",
     "typescript": "^5.0.0"
   }
 }

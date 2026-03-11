@@ -1,8 +1,19 @@
 # opencode-gitlab-multi-pat
 
-Multi-account Personal Access Token rotation for OpenCode. When a GitLab PAT fails (429/401), it goes to the **exhausted** bucket. No automatic retry. You decide when to bring it back.
+Simple multi-account GitLab PAT rotation for OpenCode.
+
+When a token fails with `429` or `401`, it is moved out of rotation into an exhausted bucket. It is not retried automatically. If you fix it, you restore it yourself.
+
+## What it does
+
+- stores multiple GitLab PATs
+- rotates through active tokens in round-robin order
+- moves dead tokens to `exhausted.json`
+- gives you a small CLI to inspect, restore, or clear exhausted tokens
 
 ## Install
+
+OpenCode config:
 
 ```json
 {
@@ -10,7 +21,8 @@ Multi-account Personal Access Token rotation for OpenCode. When a GitLab PAT fai
 }
 ```
 
-Or from source:
+From source:
+
 ```bash
 git clone https://github.com/Microck/opencode-gitlab-multi-pat.git
 cd opencode-gitlab-multi-pat
@@ -18,102 +30,98 @@ npm ci
 npm run build
 ```
 
-## Usage
+## Add accounts
 
-### Add Accounts
+In OpenCode, run `/connect`, choose `GitLab PAT (Add Account)`, then enter:
 
-Run `/connect` in OpenCode, choose "GitLab PAT (Add Account)" and enter:
-- **alias**: e.g., `work`, `personal`
-- **instanceUrl**: e.g., `https://gitlab.com` or your self-hosted URL
-- **pat**: Your Personal Access Token (starts with `glpat-`)
+- `alias` - `work`, `personal`, `selfhosted`, whatever you want
+- `instanceUrl` - `https://gitlab.com` or your self-hosted GitLab URL
+- `pat` - your token starting with `glpat-`
 
-Repeat for each account you want to rotate through.
+Repeat that for every account you want in rotation.
 
-### How Rotation Works
+## Rotation model
 
-1. Requests cycle through active accounts in round-robin order
-2. On 429 (rate limit) or 401 (unauthorized): account moves to **exhausted** pool
-3. Exhausted accounts are **never** retried automatically
-4. When all accounts are exhausted, requests fail with 503
+The plugin uses two files:
 
-### Managing Accounts
+```text
+~/.config/gitlab-multi-pat/
+|- active.json
+`- exhausted.json
+```
+
+- `active.json` - tokens currently eligible for requests
+- `exhausted.json` - tokens removed from use after `429` or `401`, with timestamp and reason
+
+Files are written with `0o600` permissions.
+
+## Failure behavior
+
+Request flow is intentionally simple:
+
+1. pick the next token from `active.json`
+2. make the request
+3. if the response is `429` or `401`, move that token to `exhausted.json`
+4. try the next active token
+5. if no active tokens remain, return `503`
+
+There is no cooldown logic and no hidden recovery. A token either works or it is exhausted.
+
+## CLI
 
 ```bash
-# List active vs exhausted
+# show both pools
 gitlab-multi-pat list
 
-# Remove an account completely
+# remove an active token completely
 gitlab-multi-pat remove work
 
-# Manually exhaust an account (e.g., you know it's dead)
-gitlab-multi-pat exhaust personal "Revoked by admin"
+# manually mark an active token dead
+gitlab-multi-pat exhaust work "revoked by admin"
 
-# Restore exhausted account back to active pool
-gitlab-multi-pat restore personal
+# move an exhausted token back into rotation
+gitlab-multi-pat restore work
 
-# Permanently delete all exhausted accounts
+# delete all exhausted tokens forever
 gitlab-multi-pat clear-exhausted
 
-# Show storage file locations
+# print storage paths
 gitlab-multi-pat paths
 ```
 
-## Storage
+## When to restore a token
 
-```
-~/.config/gitlab-multi-pat/
-├── active.json      # Being rotated through
-└── exhausted.json   # Failed, won't be used
-```
+Use `restore` only after you have actually fixed the underlying problem.
 
-Files created with `0o600` permissions.
+Examples:
 
-## Why Two Buckets?
-
-| Bucket | Purpose |
-|--------|---------|
-| **active** | Healthy tokens in rotation |
-| **exhausted** | Dead tokens with failure reason + timestamp |
-
-Unlike cooldown-based systems, this is stateless: a token either works or it's dead. You control resurrection.
-
-## Comparison to Similar Plugins
-
-| | opencode-multi-auth-codex | This |
-|---|---------------------------|------|
-| Auth type | OAuth (auto-refresh) | PAT (no refresh) |
-| Failed tokens | Cooldown + auto-retry | Permanent exhaust |
-| Recovery | Automatic | Manual CLI |
-| Complexity | 1000+ lines, dashboard, health tracking | 400 lines, two files |
-| Use case | High-volume ChatGPT rotation | GitLab PAT rotation |
+- you replaced a revoked PAT
+- you want to retry a token that hit a temporary GitLab limit
+- you corrected the wrong GitLab instance URL
 
 ## Troubleshooting
 
-**All accounts exhausted**
+If every token is exhausted:
+
 ```bash
 gitlab-multi-pat list
-gitlab-multi-pat restore <alias>  # for each fixed token
+gitlab-multi-pat restore <alias>
 ```
 
-**PAT validation fails**
-- Ensure token starts with `glpat-`
-- Check token has `api` or `read_api` scope
-- Verify instance URL is correct
+If PAT validation fails:
 
-**Files not found**
+- check that the token starts with `glpat-`
+- check that it has the scopes you need, usually `api` or `read_api`
+- check that the GitLab instance URL is correct
+
+## Dev
+
 ```bash
-gitlab-multi-pat paths  # check locations
+npm ci
+npm run build
 ```
 
-## Files
-
-```
-src/
-├── index.ts    # Plugin + customFetch
-├── store.ts    # Two-file storage logic
-├── cli.ts      # CLI commands
-└── types.ts    # TypeScript definitions
-```
+Current CI runs `npm ci` and `npm run build` on pushes and pull requests.
 
 ## License
 
