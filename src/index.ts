@@ -234,6 +234,15 @@ function isWithinRotationCooldown(): boolean {
   return Date.now() - lastRotationAt < ROTATION_COOLDOWN_MS
 }
 
+function sanitizeToolCallId(value: string): string {
+  const sanitized = value.replace(/[^a-zA-Z0-9_-]/g, (char) => {
+    const code = char.codePointAt(0)
+    return code === undefined ? '_' : `_x${code.toString(16)}_`
+  })
+
+  return sanitized.length > 0 ? sanitized : 'tool_call'
+}
+
 async function rotateToNextAccount(client: AuthClient, reason: string, source: string): Promise<void> {
   if (isWithinRotationCooldown()) {
     logLine(`rotation skipped (cooldown) from ${source}`, { reason, lastRotationAt })
@@ -424,6 +433,26 @@ const GitLabMultiPatPlugin: Plugin = async ({ client }) => {
           },
         },
       ],
+    },
+    async 'experimental.chat.messages.transform'(_, output) {
+      let sanitizedCount = 0
+
+      for (const message of output.messages) {
+        for (const part of message.parts) {
+          if (part.type !== 'tool') continue
+          if (/^[a-zA-Z0-9_-]+$/.test(part.callID)) continue
+
+          const nextCallId = sanitizeToolCallId(part.callID)
+          if (nextCallId === part.callID) continue
+
+          part.callID = nextCallId
+          sanitizedCount += 1
+        }
+      }
+
+      if (sanitizedCount > 0) {
+        logLine('sanitized historical tool call ids', { sanitizedCount })
+      }
     },
     async event({ event }) {
       try {

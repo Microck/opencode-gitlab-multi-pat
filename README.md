@@ -9,6 +9,7 @@ when a GitLab Duo request fails with a credit/quota error (402, 429, etc.), this
 - keeps a pool of active GitLab PATs in `~/.config/gitlab-multi-pat/active.json`
 - on startup, sets the first active account as the GitLab auth credential
 - listens to OpenCode events (`session.error`, `message.updated`, `session.status`)
+- sanitizes historical tool call IDs before chat history is sent to Anthropic-compatible GitLab models
 - when a rotation-worthy failure is detected on a GitLab session:
   1. exhausts the current account (moves it to `exhausted.json`)
   2. switches auth to the next active account via `client.auth.set()`
@@ -89,6 +90,10 @@ the plugin is event-driven, not a request proxy. it hooks into the OpenCode even
 3. the plugin confirms the failing session belongs to the `gitlab` provider (via `client.session.messages()`)
 4. if confirmed: exhaust current account → pick next → write auth files → call `client.auth.set()`
 5. a 10-second cooldown prevents duplicate events from the same failure from exhausting multiple accounts
+
+### chat switch compatibility
+
+some older chats can contain historical tool call IDs with characters Anthropic rejects (for example `.` or `/`). before OpenCode sends message history to GitLab Opus, the plugin rewrites those historical tool IDs into Anthropic-safe IDs so chat switching does not fail on `tool_use.id` validation.
 
 ### the duplicate event problem
 

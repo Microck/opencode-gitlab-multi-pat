@@ -1,6 +1,6 @@
 {
   "name": "opencode-gitlab-multi-pat",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Multi-account GitLab PAT rotation plugin for OpenCode",
   "license": "MIT",
   "type": "module",
