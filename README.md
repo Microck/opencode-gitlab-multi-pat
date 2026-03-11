@@ -1,27 +1,40 @@
 # opencode-gitlab-multi-pat
 
-Simple multi-account GitLab PAT rotation for OpenCode.
+simple multi-account GitLab PAT rotation for OpenCode.
 
-When a token fails with `429` or `401`, it is moved out of rotation into an exhausted bucket. It is not retried automatically. If you fix it, you restore it yourself.
+when a token returns `429` or `401`, this plugin moves it out of rotation and into `exhausted.json`. it stays there until you put it back.
 
-## What it does
+## what it does
 
-- stores multiple GitLab PATs
-- rotates through active tokens in round-robin order
-- moves dead tokens to `exhausted.json`
-- gives you a small CLI to inspect, restore, or clear exhausted tokens
+- keeps a pool of active GitLab PATs
+- rotates requests across that pool in round-robin order
+- moves bad tokens to `exhausted.json`
+- gives you a small cli to inspect, exhaust, restore, or delete tokens
 
-## Install
+## install
 
-OpenCode config:
+npm package install:
+
+```bash
+npm install opencode-gitlab-multi-pat
+```
+
+OpenCode config uses the `plugin` key, not `plugins`:
 
 ```json
 {
-  "plugins": ["github:Microck/opencode-gitlab-multi-pat"]
+  "plugin": ["opencode-gitlab-multi-pat"]
 }
 ```
 
-From source:
+local plugin install also works. drop a built file in one of these directories:
+
+```text
+.opencode/plugins/
+~/.config/opencode/plugins/
+```
+
+from source:
 
 ```bash
 git clone https://github.com/Microck/opencode-gitlab-multi-pat.git
@@ -30,19 +43,24 @@ npm ci
 npm run build
 ```
 
-## Add accounts
+then either:
 
-In OpenCode, run `/connect`, choose `GitLab PAT (Add Account)`, then enter:
+- publish to npm and use the `plugin` array
+- or copy the built plugin into your local OpenCode plugin directory
 
-- `alias` - `work`, `personal`, `selfhosted`, whatever you want
-- `instanceUrl` - `https://gitlab.com` or your self-hosted GitLab URL
-- `pat` - your token starting with `glpat-`
+## add accounts
 
-Repeat that for every account you want in rotation.
+in OpenCode, run `/connect`, pick `GitLab PAT (Add Account)`, then enter:
 
-## Rotation model
+- `alias` - `work`, `personal`, `spare-1`
+- `instanceUrl` - `https://gitlab.com` or your self-hosted GitLab url
+- `pat` - a token that starts with `glpat-`
 
-The plugin uses two files:
+add as many as you want in rotation.
+
+## storage
+
+the plugin keeps two files:
 
 ```text
 ~/.config/gitlab-multi-pat/
@@ -50,33 +68,51 @@ The plugin uses two files:
 `- exhausted.json
 ```
 
-- `active.json` - tokens currently eligible for requests
-- `exhausted.json` - tokens removed from use after `429` or `401`, with timestamp and reason
+- `active.json` holds tokens that can still be used
+- `exhausted.json` holds tokens that failed, plus the reason and time
 
-Files are written with `0o600` permissions.
+files are written with `0o600` permissions.
 
-## Failure behavior
+example:
 
-Request flow is intentionally simple:
+```json
+[
+  {
+    "alias": "work",
+    "instanceUrl": "https://gitlab.com"
+  }
+]
+```
+
+## how requests move
+
+the request path is simple:
 
 1. pick the next token from `active.json`
 2. make the request
-3. if the response is `429` or `401`, move that token to `exhausted.json`
-4. try the next active token
-5. if no active tokens remain, return `503`
+3. if the response is `429`, move that token to `exhausted.json`
+4. if the response is `401`, move that token to `exhausted.json`
+5. try the next token
+6. if there are no active tokens left, return `503`
 
-There is no cooldown logic and no hidden recovery. A token either works or it is exhausted.
+example:
 
-## CLI
+- `work` gets `429` -> moved to exhausted
+- `personal` gets `200` -> request succeeds
+- next request starts from the next active token, not the dead one
+
+there is no cooldown logic. there is no silent retry later. dead tokens stay dead until you restore them.
+
+## cli
 
 ```bash
-# show both pools
+# show active and exhausted pools
 gitlab-multi-pat list
 
 # remove an active token completely
 gitlab-multi-pat remove work
 
-# manually mark an active token dead
+# mark an active token as dead right now
 gitlab-multi-pat exhaust work "revoked by admin"
 
 # move an exhausted token back into rotation
@@ -89,40 +125,57 @@ gitlab-multi-pat clear-exhausted
 gitlab-multi-pat paths
 ```
 
-## When to restore a token
+## when to restore a token
 
-Use `restore` only after you have actually fixed the underlying problem.
+restore a token only when you actually fixed the problem.
 
-Examples:
+examples:
 
 - you replaced a revoked PAT
-- you want to retry a token that hit a temporary GitLab limit
-- you corrected the wrong GitLab instance URL
+- you hit a temporary GitLab limit and want to try again
+- you fixed the wrong GitLab instance url
 
-## Troubleshooting
+## troubleshooting
 
-If every token is exhausted:
+if every token is exhausted:
 
 ```bash
 gitlab-multi-pat list
 gitlab-multi-pat restore <alias>
 ```
 
-If PAT validation fails:
+if PAT validation fails:
 
 - check that the token starts with `glpat-`
 - check that it has the scopes you need, usually `api` or `read_api`
-- check that the GitLab instance URL is correct
+- check that the GitLab instance url is correct
 
-## Dev
+## dev
 
 ```bash
 npm ci
 npm run build
 ```
 
-Current CI runs `npm ci` and `npm run build` on pushes and pull requests.
+ci runs `npm ci` and `npm run build` on pushes and pull requests.
 
-## License
+## publish
+
+this repo is set up for npm publish.
+
+```bash
+npm login
+npm publish
+```
+
+after publish, users install the package and reference it like this:
+
+```json
+{
+  "plugin": ["opencode-gitlab-multi-pat"]
+}
+```
+
+## license
 
 MIT
