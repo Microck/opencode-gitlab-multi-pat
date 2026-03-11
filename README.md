@@ -1,25 +1,29 @@
 # opencode-gitlab-multi-pat
 
-simple multi-account GitLab PAT rotation for OpenCode.
+multi-account GitLab PAT rotation for OpenCode.
 
-when a token returns `429` or `401`, this plugin moves it out of rotation and into `exhausted.json`. it stays there until you put it back.
+when a GitLab Duo request fails with a credit/quota error (402, 429, etc.), this plugin exhausts the current account and switches to the next one — no manual intervention, no service interruption.
 
 ## what it does
 
-- keeps a pool of active GitLab PATs
-- rotates requests across that pool in round-robin order
-- moves bad tokens to `exhausted.json`
-- gives you a small cli to inspect, exhaust, restore, or delete tokens
+- keeps a pool of active GitLab PATs in `~/.config/gitlab-multi-pat/active.json`
+- on startup, sets the first active account as the GitLab auth credential
+- listens to OpenCode events (`session.error`, `message.updated`, `session.status`)
+- when a rotation-worthy failure is detected on a GitLab session:
+  1. exhausts the current account (moves it to `exhausted.json`)
+  2. switches auth to the next active account via `client.auth.set()`
+  3. logs the rotation to `~/.config/opencode/gitlab-multi-pat.log`
+- 10-second cooldown prevents duplicate events from burning multiple accounts per failure
 
 ## install
 
-npm package install:
+npm:
 
 ```bash
 npm install opencode-gitlab-multi-pat
 ```
 
-OpenCode config uses the `plugin` key, not `plugins`:
+OpenCode config (`opencode.json`) — uses the `plugin` key, not `plugins`:
 
 ```json
 {
@@ -27,11 +31,11 @@ OpenCode config uses the `plugin` key, not `plugins`:
 }
 ```
 
-local plugin install also works. drop a built file in one of these directories:
+local install also works. copy a built plugin into one of:
 
 ```text
-.opencode/plugins/
-~/.config/opencode/plugins/
+.opencode/plugins/opencode-gitlab-multi-pat/
+~/.config/opencode/plugins/opencode-gitlab-multi-pat/
 ```
 
 from source:
@@ -39,69 +43,58 @@ from source:
 ```bash
 git clone https://github.com/Microck/opencode-gitlab-multi-pat.git
 cd opencode-gitlab-multi-pat
-npm ci
-npm run build
+npm ci && npm run build
+cp -r dist/ ~/.config/opencode/plugins/opencode-gitlab-multi-pat/dist/
+cp package.json ~/.config/opencode/plugins/opencode-gitlab-multi-pat/
 ```
-
-then either:
-
-- publish to npm and use the `plugin` array
-- or copy the built plugin into your local OpenCode plugin directory
 
 ## add accounts
 
 in OpenCode, run `/connect`, pick `GitLab PAT (Add Account)`, then enter:
 
-- `alias` - `work`, `personal`, `spare-1`
-- `instanceUrl` - `https://gitlab.com` or your self-hosted GitLab url
-- `pat` - a token that starts with `glpat-`
+- `alias` — `work`, `personal`, `spare-1`, etc.
+- `instanceUrl` — `https://gitlab.com` or your self-hosted GitLab url
+- `pat` — a token that starts with `glpat-`
 
-add as many as you want in rotation.
+the plugin validates the PAT against `/api/v4/user` before adding it. add as many accounts as you want.
 
 ## storage
 
-the plugin keeps two files:
-
 ```text
 ~/.config/gitlab-multi-pat/
-|- active.json
-`- exhausted.json
+├── active.json      # accounts available for rotation
+└── exhausted.json   # accounts that failed, with reason and timestamp
 ```
 
-- `active.json` holds tokens that can still be used
-- `exhausted.json` holds tokens that failed, plus the reason and time
+files are written atomically (write to `.tmp`, then rename) with `0o600` permissions.
 
-files are written with `0o600` permissions.
+the plugin also writes to both OpenCode auth files:
 
-example:
-
-```json
-[
-  {
-    "alias": "work",
-    "instanceUrl": "https://gitlab.com"
-  }
-]
+```text
+~/.config/opencode/auth.json
+~/.local/share/opencode/auth.json
 ```
 
-## how requests move
+## how rotation works
 
-the request path is simple:
+the plugin is event-driven, not a request proxy. it hooks into the OpenCode event bus:
 
-1. pick the next token from `active.json`
-2. make the request
-3. if the response is `429`, move that token to `exhausted.json`
-4. if the response is `401`, move that token to `exhausted.json`
-5. try the next token
-6. if there are no active tokens left, return `503`
+1. OpenCode emits `session.error`, `message.updated`, or `session.status` when a request fails
+2. the plugin checks if the error message contains rotation-worthy signals:
+   - `402`, `429`, `403`
+   - `rate limit`, `too many requests`, `usage limit`, `quota`
+   - `insufficient credits`, `does not have sufficient credits`
+   - `access denied to gitlab ai features`, `forbidden`
+   - `trial`, `subscription`, `duo chat is not available`
+3. the plugin confirms the failing session belongs to the `gitlab` provider (via `client.session.messages()`)
+4. if confirmed: exhaust current account → pick next → write auth files → call `client.auth.set()`
+5. a 10-second cooldown prevents duplicate events from the same failure from exhausting multiple accounts
 
-example:
+### the duplicate event problem
 
-- `work` gets `429` -> moved to exhausted
-- `personal` gets `200` -> request succeeds
-- next request starts from the next active token, not the dead one
+OpenCode emits the same failure through multiple event channels — a single 402 can fire both `session.error` and `message.updated` within ~100-400ms. without protection, a naive listener would exhaust 2+ accounts per failure.
 
-there is no cooldown logic. there is no silent retry later. dead tokens stay dead until you restore them.
+this plugin handles it with an early cooldown gate: `lastRotationAt` is set immediately when rotation begins (before exhausting the current account), so the second event is blocked by the cooldown check before it can do any async work.
 
 ## cli
 
@@ -110,13 +103,13 @@ there is no cooldown logic. there is no silent retry later. dead tokens stay dea
 gitlab-multi-pat list
 
 # remove an active token completely
-gitlab-multi-pat remove work
+gitlab-multi-pat remove <alias>
 
 # mark an active token as dead right now
-gitlab-multi-pat exhaust work "revoked by admin"
+gitlab-multi-pat exhaust <alias> "reason"
 
 # move an exhausted token back into rotation
-gitlab-multi-pat restore work
+gitlab-multi-pat restore <alias>
 
 # delete all exhausted tokens forever
 gitlab-multi-pat clear-exhausted
@@ -127,28 +120,53 @@ gitlab-multi-pat paths
 
 ## when to restore a token
 
-restore a token only when you actually fixed the problem.
-
-examples:
+restore a token only when you actually fixed the problem:
 
 - you replaced a revoked PAT
 - you hit a temporary GitLab limit and want to try again
-- you fixed the wrong GitLab instance url
+- the trial was renewed or credits were replenished
 
 ## troubleshooting
 
-if every token is exhausted:
+**all tokens exhausted:**
 
 ```bash
 gitlab-multi-pat list
 gitlab-multi-pat restore <alias>
 ```
 
-if PAT validation fails:
+**PAT validation fails on /connect:**
 
 - check that the token starts with `glpat-`
-- check that it has the scopes you need, usually `api` or `read_api`
+- check that it has the scopes you need (`api` or `read_api`)
 - check that the GitLab instance url is correct
+
+**rotation not firing:**
+
+- check `~/.config/opencode/gitlab-multi-pat.log` for event traces
+- look for `event skipped (cooldown)` if you suspect the cooldown is too aggressive
+- verify the session is actually using the `gitlab` provider (the plugin confirms this before rotating)
+
+**plugin not loading:**
+
+- opencode uses `plugin` (singular), not `plugins`
+- restart opencode after config changes
+- check that the plugin file exists at the configured path
+
+## logs
+
+rotation events are logged to:
+
+```text
+~/.config/opencode/gitlab-multi-pat.log
+```
+
+every event is timestamped. the log includes:
+- plugin startup and active account selection
+- all received events (type only, no sensitive data)
+- session provider lookups
+- rotation decisions (cooldown skips, exhaustions, switches)
+- errors in the event handler itself
 
 ## dev
 
@@ -157,23 +175,11 @@ npm ci
 npm run build
 ```
 
-ci runs `npm ci` and `npm run build` on pushes and pull requests.
-
 ## publish
-
-this repo is set up for npm publish.
 
 ```bash
 npm login
 npm publish
-```
-
-after publish, users install the package and reference it like this:
-
-```json
-{
-  "plugin": ["opencode-gitlab-multi-pat"]
-}
 ```
 
 ## license
