@@ -107,6 +107,12 @@ this plugin handles it with an early cooldown gate: `lastRotationAt` is set imme
 # show active and exhausted pools
 gitlab-multi-pat list
 
+# verify one account still has PAT + Duo access
+gitlab-multi-pat check <alias>
+
+# verify the most recently exhausted accounts
+gitlab-multi-pat check-recent 5
+
 # remove an active token completely
 gitlab-multi-pat remove <alias>
 
@@ -130,6 +136,12 @@ restore a token only when you actually fixed the problem:
 - you replaced a revoked PAT
 - you hit a temporary GitLab limit and want to try again
 - the trial was renewed or credits were replenished
+
+before restoring, you can probe the account directly:
+
+- `gitlab-multi-pat check <alias>` validates the PAT against `/api/v4/user` and GitLab Duo access against `/api/v4/ai/third_party_agents/direct_access`
+- `Restorable: yes` means the token is valid and Duo direct access is still available
+- this check does **not** guarantee the account has remaining inference credits for every model request, but it does prove the PAT is not simply dead or missing Duo access
 
 ## troubleshooting
 

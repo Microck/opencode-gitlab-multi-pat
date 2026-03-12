@@ -8,6 +8,7 @@ import {
   listExhausted,
   getStorePaths
 } from './store.js'
+import { checkAccountHealth } from './health.js'
 
 const command = process.argv[2]
 
@@ -24,6 +25,8 @@ Commands:
   restore <alias>         Restore exhausted account back to active
   exhaust <alias> [reason] Move active account to exhausted pool
   clear-exhausted         Permanently delete all exhausted accounts
+  check <alias>           Verify PAT validity and Duo direct access
+  check-recent [count]    Check the most recently exhausted accounts
   paths                   Show storage file locations
 
 Examples:
@@ -31,7 +34,21 @@ Examples:
   gitlab-multi-pat remove work
   gitlab-multi-pat restore personal
   gitlab-multi-pat exhaust work "Token revoked"
+  gitlab-multi-pat check personal
+  gitlab-multi-pat check-recent 4
 `)
+}
+
+function printHealth(result: Awaited<ReturnType<typeof checkAccountHealth>>) {
+  console.log(`\n${result.alias}${result.username ? ` (${result.username})` : ''}`)
+  console.log(`  Pool:             ${result.pool}`)
+  console.log(`  PAT valid:        ${result.patValid ? 'yes' : 'no'}`)
+  console.log(`  Username match:   ${result.usernameMatches === null ? 'unknown' : result.usernameMatches ? 'yes' : 'no'}`)
+  console.log(`  Duo direct access:${result.duoAccess ? ' yes' : ' no'}`)
+  console.log(`  /api/v4/user:     ${result.userStatus ?? 'n/a'}`)
+  console.log(`  direct_access:    ${result.directAccessStatus ?? 'n/a'}`)
+  console.log(`  Restorable:       ${result.restorable ? 'yes' : 'no'}`)
+  console.log(`  Summary:          ${result.summary}`)
 }
 
 async function main() {
@@ -120,7 +137,50 @@ async function main() {
       console.log(`  Exhausted: ${paths.exhausted}`)
       break
     }
-    
+
+    case 'check': {
+      const alias = process.argv[3]
+      if (!alias) {
+        console.log('Error: Alias required')
+        process.exit(1)
+      }
+
+      const active = listActive()
+      const exhausted = listExhausted()
+      const activeMatch = active.find(acc => acc.alias === alias)
+      const exhaustedMatch = exhausted.find(acc => acc.alias === alias)
+      const account = activeMatch || exhaustedMatch
+
+      if (!account) {
+        console.log(`Account not found: ${alias}`)
+        process.exit(1)
+      }
+
+      const pool = activeMatch ? 'active' : 'exhausted'
+      const result = await checkAccountHealth(account, pool)
+      printHealth(result)
+      break
+    }
+
+    case 'check-recent': {
+      const count = Number.parseInt(process.argv[3] || '5', 10)
+      const exhausted = listExhausted()
+        .slice()
+        .sort((a, b) => (b.exhaustedAt ?? 0) - (a.exhaustedAt ?? 0))
+        .slice(0, Number.isFinite(count) && count > 0 ? count : 5)
+
+      if (exhausted.length === 0) {
+        console.log('No exhausted accounts to check')
+        break
+      }
+
+      for (const account of exhausted) {
+        const result = await checkAccountHealth(account, 'exhausted')
+        printHealth(result)
+      }
+      break
+    }
+
     case 'add': {
       console.log('Use /connect in OpenCode to add accounts interactively')
       break
